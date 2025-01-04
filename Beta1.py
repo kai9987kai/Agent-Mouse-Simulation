@@ -12,16 +12,34 @@ screen_width, screen_height = pyautogui.size()
 
 # Simulation settings
 settings = {
-    "agent": {"max_speed": 5, "energy": 100, "energy_decay": 0.1, "energy_regeneration": 0.01},
+    "agent": {
+        "max_speed": 5,
+        "energy": 100,
+        "energy_decay": 0.1,
+        "energy_regeneration": 0.01,
+        "hold_click_energy": 0.2,  # Energy consumed per second while holding a click
+    },
     "food": {"count": 5, "size": 20, "color": "green"},
     "spawn_rate": 2,  # How often new food spawns (in seconds)
-    "reward": {"click": 10, "right_click": 20, "scroll": 5, "change": 50, "task_completion": 100},
+    "reward": {
+        "click": 10,
+        "right_click": 20,
+        "middle_click": 15,
+        "hold_click": 5,  # Reward per second while holding a click
+        "key_press": 10,
+        "key_combo": 30,  # Reward for key combinations (e.g., Ctrl+Shift+C)
+        "change": 50,
+        "task_completion": 100,
+    },
     "memory_size": 10000,  # Experience replay buffer size
     "batch_size": 32,  # Mini-batch size for training
     "gamma": 0.95,  # Discount factor
     "epsilon": 1.0,  # Exploration rate
     "epsilon_min": 0.01,  # Minimum exploration rate
     "epsilon_decay": 0.995,  # Decay rate for exploration
+    "learning_rate": 0.001,
+    "max_hold_duration": 5,  # Maximum duration for holding a click (in seconds)
+    "action_delay": 0.1,  # Delay between actions to prevent overwhelming the system
 }
 
 # Initialize entities
@@ -43,23 +61,23 @@ class Agent:
         self.target_brain.set_weights(self.brain.get_weights())
         self.memory = deque(maxlen=settings["memory_size"])  # Experience replay buffer
         self.epsilon = settings["epsilon"]
+        self.hold_start_time = None  # Track hold-click duration
 
     def create_brain(self):
-        # Neural network with convolutional layers for screen capture input
-        model = tf.keras.Sequential([
-            tf.keras.layers.Input(shape=(100, 100, 3)),  # Explicit Input layer
-            tf.keras.layers.Conv2D(32, (3, 3), activation="relu"),
-            tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.MaxPooling2D((2, 2)),
-            tf.keras.layers.Conv2D(64, (3, 3), activation="relu"),
-            tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.MaxPooling2D((2, 2)),
-            tf.keras.layers.Flatten(),
-            tf.keras.layers.Dense(128, activation="relu"),
-            tf.keras.layers.Dropout(0.5),
-            tf.keras.layers.Dense(6, activation="linear"),  # 6 actions: move left, right, up, down, left-click, right-click
-        ])
-        model.compile(optimizer="adam", loss="mse")
+        # Neural network with convolutional layers and attention mechanisms
+        inputs = tf.keras.layers.Input(shape=(100, 100, 3))
+        x = tf.keras.layers.Conv2D(32, (3, 3), activation="relu")(inputs)
+        x = tf.keras.layers.BatchNormalization()(x)
+        x = tf.keras.layers.MaxPooling2D((2, 2))(x)
+        x = tf.keras.layers.Conv2D(64, (3, 3), activation="relu")(x)
+        x = tf.keras.layers.BatchNormalization()(x)
+        x = tf.keras.layers.MaxPooling2D((2, 2))(x)
+        x = tf.keras.layers.Flatten()(x)
+        x = tf.keras.layers.Dense(128, activation="relu")(x)
+        x = tf.keras.layers.Dropout(0.5)(x)
+        outputs = tf.keras.layers.Dense(10, activation="linear")(x)  # 10 actions
+        model = tf.keras.Model(inputs, outputs)
+        model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=settings["learning_rate"]), loss="mse")
         return model
 
     def remember(self, state, action, reward, next_state, done):
@@ -69,7 +87,7 @@ class Agent:
     def act(self, state):
         # Epsilon-greedy strategy for exploration vs. exploitation
         if np.random.rand() <= self.epsilon:
-            return np.random.randint(0, 6)  # Random action
+            return np.random.randint(0, 10)  # Random action
         q_values = self.brain.predict(state[np.newaxis, ...], verbose=0)[0]
         return np.argmax(q_values)  # Predicted action
 
@@ -139,6 +157,28 @@ class Agent:
         elif action == 5:  # Right-click
             pyautogui.rightClick()
             reward += settings["reward"]["right_click"]
+        elif action == 6:  # Middle-click
+            pyautogui.middleClick()
+            reward += settings["reward"]["middle_click"]
+        elif action == 7:  # Hold click
+            if self.hold_start_time is None:
+                self.hold_start_time = time.time()
+                pyautogui.mouseDown()
+            else:
+                hold_duration = time.time() - self.hold_start_time
+                if hold_duration >= settings["max_hold_duration"]:
+                    pyautogui.mouseUp()
+                    self.hold_start_time = None
+                reward += settings["reward"]["hold_click"] * hold_duration
+        elif action == 8:  # Key press (e.g., 'A')
+            pyautogui.press('a')
+            reward += settings["reward"]["key_press"]
+        elif action == 9:  # Key combination (e.g., Ctrl+Shift+C)
+            try:
+                pyautogui.hotkey('ctrl', 'shift', 'c')  # Changed from 'ctrl+c' to avoid interruption
+                reward += settings["reward"]["key_combo"]
+            except KeyboardInterrupt:
+                print("Key combination interrupted. Skipping...")
 
         # Ensure the mouse stays within the screen bounds
         x = max(0, min(screen_width, x))
@@ -177,6 +217,9 @@ class Agent:
         # Train the agent using experience replay
         self.replay()
 
+        # Add a small delay to prevent overwhelming the system
+        time.sleep(settings["action_delay"])
+
         return not done, reward
 
 class Food:
@@ -203,29 +246,33 @@ def run_simulation():
     last_spawn_time = time.time()
     total_reward = 0
 
-    while agent.energy > 0:
-        ax.clear()
-        ax.set_xlim(0, screen_width)
-        ax.set_ylim(0, screen_height)
-        ax.set_title(f"Agent Mouse Simulation | Tasks: {tasks_completed} | Energy: {agent.energy:.2f} | Reward: {total_reward}")
+    try:
+        while agent.energy > 0:
+            ax.clear()
+            ax.set_xlim(0, screen_width)
+            ax.set_ylim(0, screen_height)
+            ax.set_title(f"Agent Mouse Simulation | Tasks: {tasks_completed} | Energy: {agent.energy:.2f} | Reward: {total_reward}")
 
-        # Update and draw entities
-        for food in foods:
-            food.draw()
+            # Update and draw entities
+            for food in foods:
+                food.draw()
 
-        # Move the agent
-        alive, reward = agent.move()
-        total_reward += reward
-        if not alive:
-            break
+            # Move the agent
+            alive, reward = agent.move()
+            total_reward += reward
+            if not alive:
+                break
 
-        # Spawn new food periodically
-        if time.time() - last_spawn_time > settings["spawn_rate"]:
-            foods.append(Food())
-            last_spawn_time = time.time()
+            # Spawn new food periodically
+            if time.time() - last_spawn_time > settings["spawn_rate"]:
+                foods.append(Food())
+                last_spawn_time = time.time()
 
-        # Refresh the plot
-        plt.pause(0.01)
+            # Refresh the plot
+            plt.pause(0.01)
+
+    except KeyboardInterrupt:
+        print("Simulation interrupted by user.")
 
     print("Simulation ended. Final tasks completed:", tasks_completed)
     print("Total reward:", total_reward)
