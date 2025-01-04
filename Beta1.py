@@ -6,6 +6,8 @@ import time
 import matplotlib.pyplot as plt
 from PIL import ImageGrab
 from collections import deque
+import winsound
+from threading import Thread
 
 # Screen dimensions
 screen_width, screen_height = pyautogui.size()
@@ -20,6 +22,7 @@ settings = {
         "hold_click_energy": 0.2,  # Energy consumed per second while holding a click
     },
     "food": {"count": 5, "size": 20, "color": "green"},
+    "button": {"size": 20, "color": "blue"},
     "spawn_rate": 2,  # How often new food spawns (in seconds)
     "reward": {
         "click": 10,
@@ -30,6 +33,7 @@ settings = {
         "key_combo": 30,  # Reward for key combinations (e.g., Ctrl+Shift+C)
         "change": 50,
         "task_completion": 100,
+        "penalty": -5,  # Penalty for inefficient actions
     },
     "memory_size": 10000,  # Experience replay buffer size
     "batch_size": 32,  # Mini-batch size for training
@@ -44,6 +48,7 @@ settings = {
 
 # Initialize entities
 foods = []
+buttons = []
 tasks_completed = 0
 
 # Visualization setup
@@ -65,14 +70,16 @@ class Agent:
 
     def create_brain(self):
         # Neural network with convolutional layers and attention mechanisms
-        inputs = tf.keras.layers.Input(shape=(100, 100, 3))
+        inputs = tf.keras.layers.Input(shape=(200, 200, 3))  # Larger input size
         x = tf.keras.layers.Conv2D(32, (3, 3), activation="relu")(inputs)
         x = tf.keras.layers.BatchNormalization()(x)
         x = tf.keras.layers.MaxPooling2D((2, 2))(x)
         x = tf.keras.layers.Conv2D(64, (3, 3), activation="relu")(x)
         x = tf.keras.layers.BatchNormalization()(x)
         x = tf.keras.layers.MaxPooling2D((2, 2))(x)
-        x = tf.keras.layers.Flatten()(x)
+        x = tf.keras.layers.Conv2D(128, (3, 3), activation="relu")(x)  # Additional layer
+        x = tf.keras.layers.BatchNormalization()(x)
+        x = tf.keras.layers.GlobalAveragePooling2D()(x)  # Replace Flatten with GlobalAveragePooling
         x = tf.keras.layers.Dense(128, activation="relu")(x)
         x = tf.keras.layers.Dropout(0.5)(x)
         outputs = tf.keras.layers.Dense(10, activation="linear")(x)  # 10 actions
@@ -102,29 +109,23 @@ class Agent:
         next_states = np.array([x[3] for x in minibatch])
         dones = np.array([x[4] for x in minibatch])
 
-        # Predict Q-values for current and next states
-        current_q = self.brain.predict(states, verbose=0)
-        next_q = self.target_brain.predict(next_states, verbose=0)
-        target_q = current_q.copy()
-
-        # Update Q-values using Bellman equation
-        for i in range(settings["batch_size"]):
-            if dones[i]:
-                target_q[i][actions[i]] = rewards[i]
-            else:
-                target_q[i][actions[i]] = rewards[i] + settings["gamma"] * np.max(next_q[i])
+        # Double DQN: Use target network for next Q-values
+        next_q = self.brain.predict(next_states, verbose=0)
+        next_actions = np.argmax(next_q, axis=1)
+        target_q = self.target_brain.predict(next_states, verbose=0)
+        target_q = rewards + settings["gamma"] * target_q[np.arange(settings["batch_size"]), next_actions] * (1 - dones)
 
         # Train the neural network
-        self.brain.fit(states, target_q, verbose=0)
+        self.brain.fit(states, tf.one_hot(actions, 10) * target_q[:, None], verbose=0)
 
         # Decay exploration rate
         if self.epsilon > settings["epsilon_min"]:
             self.epsilon *= settings["epsilon_decay"]
 
     def take_screenshot(self):
-        # Capture a 100x100 region around the mouse cursor
+        # Capture a 200x200 region around the mouse cursor
         x, y = pyautogui.position()
-        screenshot = ImageGrab.grab(bbox=(x-50, y-50, x+50, y+50))
+        screenshot = ImageGrab.grab(bbox=(x-100, y-100, x+100, y+100))
         screenshot = np.array(screenshot) / 255.0  # Normalize pixel values
         return screenshot
 
@@ -175,7 +176,7 @@ class Agent:
             reward += settings["reward"]["key_press"]
         elif action == 9:  # Key combination (e.g., Ctrl+Shift+C)
             try:
-                pyautogui.hotkey('ctrl', 'shift', 'c')  # Changed from 'ctrl+c' to avoid interruption
+                pyautogui.hotkey('ctrl', 'shift', 'c')
                 reward += settings["reward"]["key_combo"]
             except KeyboardInterrupt:
                 print("Key combination interrupted. Skipping...")
@@ -210,6 +211,12 @@ class Agent:
                 tasks_completed += 1
                 reward += settings["reward"]["task_completion"]
 
+        # Check for button clicks
+        for button in buttons:
+            if button.is_clicked(x, y):
+                button.color = "red"  # Change color when clicked
+                reward += settings["reward"]["task_completion"]
+
         # Store experience in replay buffer
         next_state = self.take_screenshot()
         self.remember(state, action, reward, next_state, done)
@@ -233,10 +240,25 @@ class Food:
         circle = plt.Circle((self.x, self.y), self.size, color=self.color)
         ax.add_patch(circle)
 
+class Button:
+    def __init__(self):
+        self.x = random.uniform(0, screen_width)
+        self.y = random.uniform(0, screen_height)
+        self.size = settings["button"]["size"]
+        self.color = settings["button"]["color"]
+
+    def draw(self):
+        circle = plt.Circle((self.x, self.y), self.size, color=self.color)
+        ax.add_patch(circle)
+
+    def is_clicked(self, x, y):
+        return np.hypot(x - self.x, y - self.y) < self.size
+
 # Initialize simulation
 def initialize_simulation():
-    global foods, tasks_completed
+    global foods, buttons, tasks_completed
     foods = [Food() for _ in range(settings["food"]["count"])]
+    buttons = [Button() for _ in range(2)]  # Add 2 buttons
     tasks_completed = 0
 
 # Main simulation loop
@@ -247,7 +269,7 @@ def run_simulation():
     total_reward = 0
 
     try:
-        while agent.energy > 0:
+        while True:  # Run forever
             ax.clear()
             ax.set_xlim(0, screen_width)
             ax.set_ylim(0, screen_height)
@@ -256,6 +278,8 @@ def run_simulation():
             # Update and draw entities
             for food in foods:
                 food.draw()
+            for button in buttons:
+                button.draw()
 
             # Move the agent
             alive, reward = agent.move()
