@@ -34,6 +34,7 @@ settings = {
         "change": 50,
         "task_completion": 100,
         "penalty": -5,  # Penalty for inefficient actions
+        "exploration": 1,  # Reward for exploring new areas
     },
     "memory_size": 10000,  # Experience replay buffer size
     "batch_size": 32,  # Mini-batch size for training
@@ -67,6 +68,7 @@ class Agent:
         self.memory = deque(maxlen=settings["memory_size"])  # Experience replay buffer
         self.epsilon = settings["epsilon"]
         self.hold_start_time = None  # Track hold-click duration
+        self.last_positions = deque(maxlen=10)  # Track recent positions for exploration
 
     def create_brain(self):
         # Neural network with convolutional layers, attention mechanisms, and recurrent layers
