@@ -107,7 +107,7 @@ Open a pull request.
 This project is licensed under the MIT License. See the LICENSE file for details.
 
 9. Contact
-For questions or feedback, open an issue on GitHub or contact your-email@example.com.
+For questions or feedback, open an issue on GitHub or contact kai9987kai@gmail.com
 
 This README.md provides a clear description of the project and a step-by-step guide for setting it up. Let me know if you need further assistance! 🚀
 
