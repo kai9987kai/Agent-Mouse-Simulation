@@ -69,7 +69,7 @@ class Agent:
         self.hold_start_time = None  # Track hold-click duration
 
     def create_brain(self):
-        # Neural network with convolutional layers and attention mechanisms
+        # Neural network with convolutional layers, attention mechanisms, and recurrent layers
         inputs = tf.keras.layers.Input(shape=(200, 200, 3))  # Larger input size
         x = tf.keras.layers.Conv2D(32, (3, 3), activation="relu")(inputs)
         x = tf.keras.layers.BatchNormalization()(x)
