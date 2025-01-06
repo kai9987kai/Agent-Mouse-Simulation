@@ -2,8 +2,8 @@
 """
 advanced_rl_mouse_simulation.py
 
-An advanced RL simulation for a "mouse agent" with improved mouse movements, drag-and-drop,
-enhanced annotations, and innovative learning mechanisms.
+An advanced RL simulation for a "mouse agent" with imitation learning,
+improved mouse movements, dynamic environments, and innovative features.
 """
 
 import random
@@ -17,6 +17,11 @@ from PIL import ImageGrab
 from collections import deque
 from typing import List, Tuple
 import threading
+import os
+
+# Suppress TensorFlow warnings
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress TensorFlow logging
+tf.get_logger().setLevel('ERROR')  # Suppress TensorFlow warnings
 
 # IMPORTANT: for interactive mode in some IDEs
 matplotlib.use('TkAgg')
@@ -316,6 +321,7 @@ class Agent:
         self.num_actions = num_actions
         self.energy = settings["agent"]["energy"]
         self.memory = deque(maxlen=settings["memory_size"])
+        self.expert_memory = deque(maxlen=settings["memory_size"])  # For imitation learning
         self.epsilon = settings["epsilon"]
         # Start near center of screen
         self.position = np.array([screen_width * 0.5, screen_height * 0.5])
@@ -357,6 +363,10 @@ class Agent:
     def remember(self, state, action, reward, next_state, done):
         self.memory.append((state, action, reward, next_state, done))
 
+    def add_expert_demonstration(self, state, action):
+        """Add an expert demonstration to the memory."""
+        self.expert_memory.append((state, action))
+
     def replay(self):
         """
         Sample from memory and train the network (Double DQN style).
@@ -395,6 +405,27 @@ class Agent:
         if self.epsilon > settings["epsilon_min"]:
             self.epsilon *= settings["epsilon_decay"]
 
+    def imitation_learning(self):
+        """Train the agent using expert demonstrations."""
+        if len(self.expert_memory) < settings["batch_size"]:
+            return
+
+        batch = random.sample(self.expert_memory, settings["batch_size"])
+        states, actions = zip(*batch)
+        states = np.array(states, dtype=np.float32)
+        actions = np.array(actions, dtype=np.int32)
+
+        # One-hot encode actions
+        actions_one_hot = tf.one_hot(actions, self.num_actions)
+
+        # Train the model using supervised learning
+        self.model.fit(states, actions_one_hot, epochs=1, verbose=0)
+
+    def train(self):
+        """Combine RL and imitation learning."""
+        self.replay()  # Regular RL training
+        self.imitation_learning()  # Imitation learning
+
     def update_target_model(self):
         self.target_model.set_weights(self.model.get_weights())
 
@@ -407,6 +438,18 @@ class Agent:
             self.energy = min(self.energy + settings["agent"]["energy_surge_amount"], settings["agent"]["energy"])
             print(f"[ENERGY SURGE] Agent energy now {self.energy:.2f}")
             self.last_surge_time = now
+
+    def smooth_mouse_move(self, start_pos, end_pos, steps=10, deviation=5):
+        """Move the mouse smoothly from start_pos to end_pos."""
+        for i in range(steps):
+            t = i / steps
+            x = start_pos[0] + (end_pos[0] - start_pos[0]) * t
+            y = start_pos[1] + (end_pos[1] - start_pos[1]) * t
+            # Add small random deviations
+            x += random.uniform(-deviation, deviation)
+            y += random.uniform(-deviation, deviation)
+            pyautogui.moveTo(x, y)
+            time.sleep(0.01)  # Small delay for smoothness
 
     def step(self, foods, special_foods, rest_zones, danger_zones, goal_zone, dynamic_obstacles, indicators):
         """
@@ -476,6 +519,9 @@ class Agent:
         self.position[0] = np.clip(self.position[0], 0, screen_width)
         self.position[1] = np.clip(self.position[1], 0, screen_height)
 
+        # Move the actual mouse cursor to the new position
+        pyautogui.moveTo(self.position[0], self.position[1])
+
         # Energy usage
         self.energy -= settings["agent"]["energy_decay"]
         if self.energy < 0:
@@ -527,7 +573,7 @@ class Agent:
         done = (self.energy <= 0)
 
         self.remember(state, action, reward, next_state, done)
-        self.replay()
+        self.train()
 
         return not done, reward
 
